@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>PA3 Report — Ventilator Pressure Prediction</title>
+<style>
+  body { font-family: Georgia, serif; max-width: 750px; margin: 60px auto; padding: 0 40px; line-height: 1.7; color: #111; }
+  h1 { font-size: 22px; border-bottom: 2px solid #333; padding-bottom: 8px; margin-bottom: 6px; }
+  h2 { font-size: 16px; margin-top: 28px; margin-bottom: 6px; }
+  .meta { color: #555; font-size: 14px; margin-bottom: 24px; }
+  p { margin: 0 0 14px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px; }
+  th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; }
+  th { background: #f4f4f4; font-weight: bold; }
+  code { font-family: monospace; background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
+  .formula { background: #f8f8f8; border-left: 3px solid #666; padding: 10px 16px; margin: 12px 0; font-family: monospace; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>PA3 — Ventilator Pressure Prediction</h1>
+<div class="meta">
+  DSC 102 — Systems for Scalable Analytics &nbsp;|&nbsp; Fall 2026 &nbsp;|&nbsp; Due: November 16, 2026<br>
+  <strong>Team member:</strong> Matthew Lee<br>
+  <strong>Time spent:</strong> approximately 6–8 hours total (data exploration, feature engineering, training, submission)
+</div>
+
+<h2>1. Problem Overview</h2>
+<p>
+  The goal of PA3 was to predict airway pressure in a mechanical ventilator simulation given
+  control signals (<code>u_in</code>, <code>u_out</code>) and lung parameters
+  (<code>R</code> — resistance, <code>C</code> — compliance). The evaluation metric was
+  mean absolute error (MAE) computed only on <em>inspiratory</em> rows where
+  <code>u_out == 0</code>. The dataset contained 5.4 million training rows across roughly
+  67,500 breath sequences.
+</p>
+
+<h2>2. Approach</h2>
+<p>
+  I used <strong>LightGBM</strong> with <strong>GroupKFold cross-validation</strong>
+  (3 folds, grouped by <code>breath_id</code>) to prevent data leakage across breath
+  sequences. The model was trained exclusively on inspiratory rows — the same subset
+  that the leaderboard scores — which both focused learning on the target metric and
+  reduced training time by roughly 50%.
+</p>
+
+<h2>3. Feature Engineering</h2>
+<p>
+  The most important design decision was grounding the feature set in the physics of
+  mechanical ventilation. The governing equation for airway pressure is:
+</p>
+<div class="formula">P ≈ R · (dV/dt) + V / C</div>
+<p>
+  where <code>V</code> is the lung volume (the time-integral of flow) and
+  <code>dV/dt ≈ u_in</code> (the valve control signal). This equation produces two
+  interpretable feature groups:
+</p>
+<ul>
+  <li><strong><code>P_resist = R · u_in</code></strong> — the resistive pressure component due to airflow</li>
+  <li><strong><code>P_compliance = cumsum(u_in · Δt) / C</code></strong> — the elastic pressure component from accumulated lung volume</li>
+  <li><strong><code>P_model = P_resist + P_compliance</code></strong> — a direct physics-based pressure prediction</li>
+</ul>
+<p>
+  By giving LightGBM a nearly correct physics prediction as a feature, the model only
+  needs to learn small residual corrections (nonlinear valve behavior, end-of-breath
+  transients, etc.) rather than inferring the entire pressure signal from scratch.
+  Additional features included:
+</p>
+<ul>
+  <li>Lag and lead values of <code>u_in</code> and <code>P_model</code> (up to 20 steps)</li>
+  <li>Rolling means over windows of 3, 5, 10, and 20 time steps</li>
+  <li>First and second differences of <code>u_in</code></li>
+  <li>Breath-level aggregates: mean, max, std, and total of <code>u_in</code></li>
+  <li>Lung parameter interactions: <code>R·C</code>, <code>R/C</code></li>
+  <li>Time-within-breath features: position, duration, cumulative volume</li>
+</ul>
+
+<h2>4. Model Configuration</h2>
+<table>
+  <tr><th>Parameter</th><th>Value</th><th>Rationale</th></tr>
+  <tr><td>Objective</td><td>MAE (<code>l1</code>)</td><td>Matches leaderboard metric</td></tr>
+  <tr><td>Num leaves</td><td>512</td><td>High capacity for complex interactions</td></tr>
+  <tr><td>Learning rate</td><td>0.05</td><td>Balanced speed vs. precision</td></tr>
+  <tr><td>Max trees</td><td>8000</td><td>With early stopping (patience 200)</td></tr>
+  <tr><td>Feature/bagging fraction</td><td>0.8</td><td>Regularization against overfitting</td></tr>
+  <tr><td>CV strategy</td><td>3-fold GroupKFold on <code>breath_id</code></td><td>Prevents leakage</td></tr>
+</table>
+
+<h2>5. Results</h2>
+<p>
+  An initial baseline submission (without physics features, trained on all rows) scored
+  <strong>0.608</strong> on the leaderboard. After incorporating the physics-informed
+  features and restricting training to inspiratory rows, the model improved substantially.
+  The final leaderboard score is shown in the accompanying screenshot.
+</p>
+<p>
+  The key lesson from this assignment was that domain knowledge — specifically the
+  respiratory mechanics equation — dramatically reduced the learning burden on LightGBM.
+  Instead of learning to map raw valve signals to pressure, the model learned corrections
+  to an already physically meaningful prediction, which is a much easier task.
+</p>
+
+<h2>6. Tools Used</h2>
+<p>
+  All development was done with the assistance of Claude Code (Anthropic), which helped
+  design the physics-informed feature engineering strategy, debug training issues
+  (early stopping on wrong metric, insufficient features), and structure the cross-validation
+  pipeline. See the attached <code>session_log</code> files for the full AI interaction history.
+</p>
+
+</body>
+</html>
